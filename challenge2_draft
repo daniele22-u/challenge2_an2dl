@@ -1,36 +1,225 @@
 {
   "metadata": {
-    "kernelspec": {"language": "python", "display_name": "Python 3", "name": "python3"},
-    "language_info": {"name": "python", "version": "3.11.13", "mimetype": "text/x-python", "codemirror_mode": {"name": "ipython", "version": 3}, "pygments_lexer": "ipython3", "nbconvert_exporter": "python", "file_extension": ".py"},
-    "kaggle": {"accelerator": "gpu", "dataSources": [{"sourceId": 13994962, "sourceType": "datasetVersion", "datasetId": 8915846}], "dockerImageVersionId": 31193, "isInternetEnabled": true, "language": "python", "sourceType": "notebook", "isGpuEnabled": true}
+    "kernelspec": {
+      "language": "python",
+      "display_name": "Python 3",
+      "name": "python3"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.11.13",
+      "mimetype": "text/x-python",
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "pygments_lexer": "ipython3",
+      "nbconvert_exporter": "python",
+      "file_extension": ".py"
+    },
+    "kaggle": {
+      "accelerator": "gpu",
+      "dataSources": [
+        {
+          "sourceId": 13994962,
+          "sourceType": "datasetVersion",
+          "datasetId": 8915846
+        }
+      ],
+      "dockerImageVersionId": 31193,
+      "isInternetEnabled": true,
+      "language": "python",
+      "sourceType": "notebook",
+      "isGpuEnabled": true
+    }
   },
   "nbformat_minor": 4,
   "nbformat": 4,
   "cells": [
-    {"cell_type": "code", "source": "!cp /kaggle/input/kagglejson/download_and_dataframming.py .\n\nfrom download_and_dataframming import load_image_dataframe, download_competition\n\ndownload_competition()\ndf = load_image_dataframe(\"an2dl2526c2\", load_pixels=True)\ndf.head()", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Configuration and Imports", "metadata": {}},
-    {"cell_type": "code", "source": "import os\nimport numpy as np\nimport pandas as pd\nimport cv2\nimport matplotlib.pyplot as plt\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import LabelEncoder\n\nimport tensorflow as tf\nfrom tensorflow.keras import layers, models, callbacks\nfrom tensorflow.keras.applications import ResNet50, EfficientNetB0\nfrom tensorflow.keras.preprocessing.image import ImageDataGenerator\n\n# Set seed for reproducibility\nnp.random.seed(42)\ntf.random.set_seed(42)\n\n# Paths\nTRAIN_DATA_DIR = \"/kaggle/working/an2dl2526c2/train_data\"\nTEST_DATA_DIR = \"/kaggle/working/an2dl2526c2/test_data\"\nLABELS_PATH = \"/kaggle/working/an2dl2526c2/train_labels.csv\"\n\n# Hyperparameters\nIMG_SIZE = (224, 224)\nBATCH_SIZE = 32\nEPOCHS = 20\nNUM_CLASSES = 4\n\nprint(\"TensorFlow version:\", tf.__version__)\nprint(\"GPU available:\", tf.config.list_physical_devices('GPU'))", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Load Labels", "metadata": {}},
-    {"cell_type": "code", "source": "# Load training labels\ndf_labels = pd.read_csv(LABELS_PATH)\nprint(\"Label columns:\", df_labels.columns.tolist())\nprint(\"Label distribution:\")\nprint(df_labels['label'].value_counts())\n\n# Encode labels\nlabel_encoder = LabelEncoder()\ndf_labels['label_encoded'] = label_encoder.fit_transform(df_labels['label'])\n\nCLASS_NAMES = label_encoder.classes_.tolist()\nprint(\"\\nClass names:\", CLASS_NAMES)\nprint(\"Class mapping:\", dict(zip(CLASS_NAMES, range(len(CLASS_NAMES)))))\n\ndf_labels.head()", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Helper Functions", "metadata": {}},
-    {"cell_type": "code", "source": "def img_path_to_mask_path(img_path):\n    \"\"\"Convert img_xxxx.png path to mask_xxxx.png path.\"\"\"\n    folder = os.path.dirname(img_path)\n    base = os.path.basename(img_path)\n    mask_name = base.replace(\"img_\", \"mask_\")\n    return os.path.join(folder, mask_name)\n\ndef load_and_preprocess_image(path, target_size=IMG_SIZE, use_mask=False):\n    \"\"\"\n    Load and preprocess an image.\n    If use_mask=True, apply the mask to highlight the region of interest.\n    \"\"\"\n    # Load image\n    img = cv2.imread(path)\n    if img is None:\n        return None\n    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)\n    \n    if use_mask:\n        mask_path = img_path_to_mask_path(path)\n        if os.path.exists(mask_path):\n            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)\n            if mask is not None:\n                # Resize mask to match image\n                mask = cv2.resize(mask, (img.shape[1], img.shape[0]))\n                # Apply mask: blend original with masked version\n                mask_binary = (mask > 0).astype(np.float32)\n                mask_3ch = np.stack([mask_binary] * 3, axis=-1)\n                # Highlight masked region, dim background\n                img = (img * mask_3ch * 0.8 + img * (1 - mask_3ch) * 0.2).astype(np.uint8)\n    \n    # Resize\n    img = cv2.resize(img, target_size)\n    \n    # Normalize\n    img = img.astype(np.float32) / 255.0\n    \n    return img\n\ndef create_train_dataset(df_labels, data_dir, use_mask=False, target_size=IMG_SIZE):\n    \"\"\"\n    Create numpy arrays for training images and labels.\n    \"\"\"\n    images = []\n    labels = []\n    valid_indices = []\n    \n    for idx, row in df_labels.iterrows():\n        img_path = os.path.join(data_dir, row['sample_index'])\n        img = load_and_preprocess_image(img_path, target_size, use_mask=use_mask)\n        \n        if img is not None:\n            images.append(img)\n            labels.append(row['label_encoded'])\n            valid_indices.append(idx)\n    \n    X = np.array(images)\n    y = np.array(labels)\n    \n    print(f\"Loaded {len(X)} training images (use_mask={use_mask})\")\n    print(f\"Shape: X={X.shape}, y={y.shape}\")\n    \n    return X, y, valid_indices\n\ndef create_test_dataset(test_dir, use_mask=False, target_size=IMG_SIZE):\n    \"\"\"\n    Create numpy arrays for test images.\n    Test folder contains both img_xxxx.png and mask_xxxx.png files.\n    \"\"\"\n    # Get list of test images (only img_ files, not mask_ files)\n    test_files = sorted([f for f in os.listdir(test_dir) if f.startswith('img_') and f.endswith('.png')])\n    print(f\"Found {len(test_files)} test images\")\n    \n    images = []\n    valid_files = []\n    \n    for filename in test_files:\n        img_path = os.path.join(test_dir, filename)\n        img = load_and_preprocess_image(img_path, target_size, use_mask=use_mask)\n        if img is not None:\n            images.append(img)\n            valid_files.append(filename)\n    \n    X = np.array(images)\n    print(f\"Loaded {len(X)} test images (use_mask={use_mask})\")\n    \n    return X, valid_files", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Model Architecture", "metadata": {}},
-    {"cell_type": "code", "source": "def build_classification_model(input_shape=(*IMG_SIZE, 3), num_classes=NUM_CLASSES, model_name=\"efficientnet\"):\n    \"\"\"\n    Build a classification model using transfer learning.\n    \"\"\"\n    if model_name == \"resnet50\":\n        base_model = ResNet50(weights='imagenet', include_top=False, input_shape=input_shape)\n    else:\n        base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=input_shape)\n    \n    # Freeze base model\n    base_model.trainable = False\n    \n    model = models.Sequential([\n        base_model,\n        layers.GlobalAveragePooling2D(),\n        layers.BatchNormalization(),\n        layers.Dropout(0.3),\n        layers.Dense(256, activation='relu'),\n        layers.BatchNormalization(),\n        layers.Dropout(0.3),\n        layers.Dense(num_classes, activation='softmax')\n    ])\n    \n    model.compile(\n        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),\n        loss='sparse_categorical_crossentropy',\n        metrics=['accuracy']\n    )\n    \n    return model\n\ndef get_callbacks(model_name=\"model\"):\n    \"\"\"Get callbacks for training.\"\"\"\n    return [\n        callbacks.EarlyStopping(\n            monitor='val_loss',\n            patience=5,\n            restore_best_weights=True\n        ),\n        callbacks.ReduceLROnPlateau(\n            monitor='val_loss',\n            factor=0.5,\n            patience=3,\n            min_lr=1e-6\n        )\n    ]", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Training Functions", "metadata": {}},
-    {"cell_type": "code", "source": "def train_model(X_train, y_train, X_val, y_val, use_mask=False, epochs=EPOCHS, batch_size=BATCH_SIZE):\n    \"\"\"\n    Train a model on the given data.\n    \"\"\"\n    model_name = \"with_mask\" if use_mask else \"no_mask\"\n    print(f\"\\n{'='*50}\")\n    print(f\"Training model: {model_name}\")\n    print(f\"{'='*50}\")\n    \n    model = build_classification_model()\n    model.summary()\n    \n    # Data augmentation\n    datagen = ImageDataGenerator(\n        rotation_range=20,\n        width_shift_range=0.1,\n        height_shift_range=0.1,\n        horizontal_flip=True,\n        vertical_flip=True,\n        zoom_range=0.1\n    )\n    \n    # Train\n    history = model.fit(\n        datagen.flow(X_train, y_train, batch_size=batch_size),\n        validation_data=(X_val, y_val),\n        epochs=epochs,\n        callbacks=get_callbacks(model_name),\n        verbose=1\n    )\n    \n    return model, history\n\ndef plot_training_history(history, title=\"Training History\"):\n    \"\"\"Plot training and validation metrics.\"\"\"\n    fig, axes = plt.subplots(1, 2, figsize=(14, 4))\n    \n    # Accuracy\n    axes[0].plot(history.history['accuracy'], label='Train')\n    axes[0].plot(history.history['val_accuracy'], label='Val')\n    axes[0].set_title(f'{title} - Accuracy')\n    axes[0].set_xlabel('Epoch')\n    axes[0].set_ylabel('Accuracy')\n    axes[0].legend()\n    axes[0].grid(True)\n    \n    # Loss\n    axes[1].plot(history.history['loss'], label='Train')\n    axes[1].plot(history.history['val_loss'], label='Val')\n    axes[1].set_title(f'{title} - Loss')\n    axes[1].set_xlabel('Epoch')\n    axes[1].set_ylabel('Loss')\n    axes[1].legend()\n    axes[1].grid(True)\n    \n    plt.tight_layout()\n    plt.show()", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Evaluation Functions", "metadata": {}},
-    {"cell_type": "code", "source": "def evaluate_on_test(model, X_test, test_files, label_encoder=None, pipeline_name=\"\"):\n    \"\"\"\n    Evaluate model on test data and generate predictions.\n    \"\"\"\n    print(f\"\\nEvaluating on test set ({pipeline_name})...\")\n    print(f\"Test set size: {len(X_test)} images\")\n    \n    # Predict\n    predictions = model.predict(X_test, verbose=1)\n    predicted_classes = np.argmax(predictions, axis=1)\n    \n    # Create results dataframe\n    results = pd.DataFrame({\n        'sample_index': test_files,\n        'predicted_class': predicted_classes,\n        'predicted_label': label_encoder.inverse_transform(predicted_classes) if label_encoder else predicted_classes,\n        'confidence': np.max(predictions, axis=1)\n    })\n    \n    # Add probabilities for each class\n    if label_encoder:\n        for i, class_name in enumerate(label_encoder.classes_):\n            results[f'prob_{class_name}'] = predictions[:, i]\n    \n    return results\n\ndef compare_predictions(results_with_mask, results_no_mask):\n    \"\"\"Compare predictions from both pipelines.\"\"\"\n    merged = results_with_mask.merge(\n        results_no_mask, \n        on='sample_index', \n        suffixes=('_mask', '_nomask')\n    )\n    \n    agreement = (merged['predicted_label_mask'] == merged['predicted_label_nomask']).mean()\n    print(f\"\\nPrediction agreement between pipelines: {agreement:.2%}\")\n    \n    disagreements = merged[merged['predicted_label_mask'] != merged['predicted_label_nomask']]\n    print(f\"Number of disagreements: {len(disagreements)}\")\n    \n    if len(disagreements) > 0:\n        print(\"\\nSample disagreements:\")\n        print(disagreements[['sample_index', 'predicted_label_mask', 'predicted_label_nomask', \n                            'confidence_mask', 'confidence_nomask']].head(10))\n    \n    return merged, agreement", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# ========================================\n# PIPELINE 1: Training AND Testing WITH Masks\n# ========================================\n\nThis pipeline uses the segmentation masks for BOTH training AND testing:\n- Training: Uses train images + train masks\n- Testing: Uses test images + test masks (from /kaggle/working/an2dl2526c2/test_data)\n\nThe mask is applied during preprocessing to highlight the region of interest (lesion area).", "metadata": {}},
-    {"cell_type": "code", "source": "# Load TRAINING data WITH masks\nprint(\"=\"*60)\nprint(\"PIPELINE 1: WITH MASKS\")\nprint(\"=\"*60)\nprint(\"\\nLoading training data with masks...\")\nX_mask, y_mask, valid_idx_mask = create_train_dataset(df_labels, TRAIN_DATA_DIR, use_mask=True)\n\n# Split into train and validation\nX_train_mask, X_val_mask, y_train_mask, y_val_mask = train_test_split(\n    X_mask, y_mask, test_size=0.2, random_state=42, stratify=y_mask\n)\n\nprint(f\"\\nTrain set: {len(X_train_mask)} samples\")\nprint(f\"Val set: {len(X_val_mask)} samples\")\n\n# Show sample training images WITH masks applied\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_train_mask):\n        ax.imshow(X_train_mask[i])\n        ax.set_title(f\"Class: {CLASS_NAMES[y_train_mask[i]]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TRAINING Images WITH Mask Applied\", fontsize=14)\nplt.tight_layout()\nplt.show()", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "code", "source": "# Train model WITH masks\nmodel_with_mask, history_with_mask = train_model(\n    X_train_mask, y_train_mask,\n    X_val_mask, y_val_mask,\n    use_mask=True,\n    epochs=EPOCHS\n)\n\n# Plot training history\nplot_training_history(history_with_mask, title=\"Pipeline 1: WITH Masks\")\n\n# Evaluate on validation set\nval_loss, val_acc = model_with_mask.evaluate(X_val_mask, y_val_mask, verbose=0)\nprint(f\"\\nValidation Accuracy (WITH mask): {val_acc:.4f}\")", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "code", "source": "# Load TEST data WITH masks\nprint(\"\\nLoading test data WITH masks...\")\nX_test_mask, test_files_mask = create_test_dataset(TEST_DATA_DIR, use_mask=True)\n\n# Show sample test images WITH masks applied\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_test_mask):\n        ax.imshow(X_test_mask[i])\n        ax.set_title(f\"Test: {test_files_mask[i][:12]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TEST Images WITH Mask Applied\", fontsize=14)\nplt.tight_layout()\nplt.show()\n\n# Evaluate on test set WITH masks\nresults_with_mask = evaluate_on_test(\n    model_with_mask, \n    X_test_mask,\n    test_files_mask,\n    label_encoder=label_encoder,\n    pipeline_name=\"WITH masks\"\n)\n\nprint(\"\\nPrediction distribution (WITH mask):\")\nprint(results_with_mask['predicted_label'].value_counts())\nresults_with_mask.head(10)", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# ========================================\n# PIPELINE 2: Training AND Testing WITHOUT Masks\n# ========================================\n\nThis pipeline trains and tests the model on RAW images WITHOUT using segmentation masks:\n- Training: Uses train images only (no masks)\n- Testing: Uses test images only (no masks)\n\nThe model learns to classify based on the entire image.", "metadata": {}},
-    {"cell_type": "code", "source": "# Load TRAINING data WITHOUT masks\nprint(\"=\"*60)\nprint(\"PIPELINE 2: WITHOUT MASKS\")\nprint(\"=\"*60)\nprint(\"\\nLoading training data without masks...\")\nX_nomask, y_nomask, valid_idx_nomask = create_train_dataset(df_labels, TRAIN_DATA_DIR, use_mask=False)\n\n# Split into train and validation\nX_train_nomask, X_val_nomask, y_train_nomask, y_val_nomask = train_test_split(\n    X_nomask, y_nomask, test_size=0.2, random_state=42, stratify=y_nomask\n)\n\nprint(f\"\\nTrain set: {len(X_train_nomask)} samples\")\nprint(f\"Val set: {len(X_val_nomask)} samples\")\n\n# Show sample training images WITHOUT masks\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_train_nomask):\n        ax.imshow(X_train_nomask[i])\n        ax.set_title(f\"Class: {CLASS_NAMES[y_train_nomask[i]]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TRAINING Images WITHOUT Mask\", fontsize=14)\nplt.tight_layout()\nplt.show()", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "code", "source": "# Train model WITHOUT masks\nmodel_no_mask, history_no_mask = train_model(\n    X_train_nomask, y_train_nomask,\n    X_val_nomask, y_val_nomask,\n    use_mask=False,\n    epochs=EPOCHS\n)\n\n# Plot training history\nplot_training_history(history_no_mask, title=\"Pipeline 2: WITHOUT Masks\")\n\n# Evaluate on validation set\nval_loss, val_acc = model_no_mask.evaluate(X_val_nomask, y_val_nomask, verbose=0)\nprint(f\"\\nValidation Accuracy (NO mask): {val_acc:.4f}\")", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "code", "source": "# Load TEST data WITHOUT masks\nprint(\"\\nLoading test data WITHOUT masks...\")\nX_test_nomask, test_files_nomask = create_test_dataset(TEST_DATA_DIR, use_mask=False)\n\n# Show sample test images WITHOUT masks\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_test_nomask):\n        ax.imshow(X_test_nomask[i])\n        ax.set_title(f\"Test: {test_files_nomask[i][:12]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TEST Images WITHOUT Mask\", fontsize=14)\nplt.tight_layout()\nplt.show()\n\n# Evaluate on test set WITHOUT masks\nresults_no_mask = evaluate_on_test(\n    model_no_mask, \n    X_test_nomask,\n    test_files_nomask,\n    label_encoder=label_encoder,\n    pipeline_name=\"WITHOUT masks\"\n)\n\nprint(\"\\nPrediction distribution (NO mask):\")\nprint(results_no_mask['predicted_label'].value_counts())\nresults_no_mask.head(10)", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# ========================================\n# Pipeline Comparison\n# ========================================\n\nCompare the results from both pipelines to see how masks affect predictions.", "metadata": {}},
-    {"cell_type": "code", "source": "# Compare predictions from both pipelines\nmerged_results, agreement = compare_predictions(results_with_mask, results_no_mask)\n\n# Visualization of prediction distribution\nfig, axes = plt.subplots(1, 2, figsize=(14, 5))\n\n# With mask\nresults_with_mask['predicted_label'].value_counts().plot(kind='bar', ax=axes[0], color='steelblue')\naxes[0].set_title('Predictions: WITH Mask (Pipeline 1)')\naxes[0].set_xlabel('Class')\naxes[0].set_ylabel('Count')\naxes[0].tick_params(axis='x', rotation=45)\n\n# Without mask\nresults_no_mask['predicted_label'].value_counts().plot(kind='bar', ax=axes[1], color='darkorange')\naxes[1].set_title('Predictions: WITHOUT Mask (Pipeline 2)')\naxes[1].set_xlabel('Class')\naxes[1].set_ylabel('Count')\naxes[1].tick_params(axis='x', rotation=45)\n\nplt.tight_layout()\nplt.show()\n\nprint(\"\\n\" + \"=\"*60)\nprint(\"SUMMARY\")\nprint(\"=\"*60)\nprint(f\"Pipeline 1 (WITH masks) - Train with mask, Test with mask\")\nprint(f\"Pipeline 2 (NO masks) - Train without mask, Test without mask\")\nprint(f\"\\nPrediction agreement between pipelines: {agreement:.2%}\")", "metadata": {"trusted": true}, "outputs": [], "execution_count": null},
-    {"cell_type": "markdown", "source": "# Save Results", "metadata": {}},
-    {"cell_type": "code", "source": "# Save predictions to CSV files\nresults_with_mask[['sample_index', 'predicted_label']].to_csv('predictions_with_mask.csv', index=False)\nresults_no_mask[['sample_index', 'predicted_label']].to_csv('predictions_no_mask.csv', index=False)\n\n# Save full comparison\nmerged_results.to_csv('pipeline_comparison.csv', index=False)\n\nprint(\"Results saved!\")\nprint(\"- predictions_with_mask.csv\")\nprint(\"- predictions_no_mask.csv\")\nprint(\"- pipeline_comparison.csv\")", "metadata": {"trusted": true}, "outputs": [], "execution_count": null}
+    {
+      "cell_type": "code",
+      "source": "!cp /kaggle/input/kagglejson/download_and_dataframming.py .\n\nfrom download_and_dataframming import load_image_dataframe, download_competition\n\ndownload_competition()\ndf = load_image_dataframe(\"an2dl2526c2\", load_pixels=True)\ndf.head()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Configuration and Imports",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "import os\nimport numpy as np\nimport pandas as pd\nimport cv2\nimport matplotlib.pyplot as plt\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.preprocessing import LabelEncoder\n\nimport tensorflow as tf\nfrom tensorflow.keras import layers, models, callbacks\nfrom tensorflow.keras.applications import ResNet50, EfficientNetB0\nfrom tensorflow.keras.preprocessing.image import ImageDataGenerator\n\n# Set seed for reproducibility\nnp.random.seed(42)\ntf.random.set_seed(42)\n\n# Paths\nTRAIN_DATA_DIR = \"/kaggle/working/an2dl2526c2/train_data\"\nTEST_DATA_DIR = \"/kaggle/working/an2dl2526c2/test_data\"\nLABELS_PATH = \"/kaggle/working/an2dl2526c2/train_labels.csv\"\n\n# Hyperparameters\nIMG_SIZE = (224, 224)\nBATCH_SIZE = 32\nEPOCHS = 20\nNUM_CLASSES = 4\n\nprint(\"TensorFlow version:\", tf.__version__)\nprint(\"GPU available:\", tf.config.list_physical_devices('GPU'))",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Load Labels",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Load training labels\ndf_labels = pd.read_csv(LABELS_PATH)\nprint(\"Label columns:\", df_labels.columns.tolist())\nprint(\"Label distribution:\")\nprint(df_labels['label'].value_counts())\n\n# Encode labels\nlabel_encoder = LabelEncoder()\ndf_labels['label_encoded'] = label_encoder.fit_transform(df_labels['label'])\n\nCLASS_NAMES = label_encoder.classes_.tolist()\nprint(\"\\nClass names:\", CLASS_NAMES)\nprint(\"Class mapping:\", dict(zip(CLASS_NAMES, range(len(CLASS_NAMES)))))\n\ndf_labels.head()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Helper Functions",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Mask blending coefficients (for experimentation)\nMASK_FOREGROUND_WEIGHT = 0.8  # Weight for masked (lesion) region\nMASK_BACKGROUND_WEIGHT = 0.2  # Weight for background region\n\ndef img_path_to_mask_path(img_path):\n    \"\"\"Convert img_xxxx.png path to mask_xxxx.png path.\"\"\"\n    folder = os.path.dirname(img_path)\n    base = os.path.basename(img_path)\n    mask_name = base.replace(\"img_\", \"mask_\")\n    return os.path.join(folder, mask_name)\n\ndef is_image_file(filename):\n    \"\"\"Check if a file is an image file (not a mask).\"\"\"\n    return filename.startswith('img_') and filename.endswith('.png')\n\ndef get_image_files(directory):\n    \"\"\"Get sorted list of image files from a directory (excluding masks).\"\"\"\n    return sorted([f for f in os.listdir(directory) if is_image_file(f)])\n\ndef load_and_preprocess_image(path, target_size=IMG_SIZE, use_mask=False):\n    \"\"\"\n    Load and preprocess an image.\n    If use_mask=True, apply the mask to highlight the region of interest.\n    \"\"\"\n    # Load image\n    img = cv2.imread(path)\n    if img is None:\n        return None\n    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)\n    \n    if use_mask:\n        mask_path = img_path_to_mask_path(path)\n        if os.path.exists(mask_path):\n            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)\n            if mask is not None:\n                # Resize mask to match image\n                mask = cv2.resize(mask, (img.shape[1], img.shape[0]))\n                # Apply mask: blend original with masked version\n                mask_binary = (mask > 0).astype(np.float32)\n                mask_3ch = np.stack([mask_binary] * 3, axis=-1)\n                # Highlight masked region, dim background using named constants\n                img = (img * mask_3ch * MASK_FOREGROUND_WEIGHT + \n                       img * (1 - mask_3ch) * MASK_BACKGROUND_WEIGHT).astype(np.uint8)\n    \n    # Resize\n    img = cv2.resize(img, target_size)\n    \n    # Normalize\n    img = img.astype(np.float32) / 255.0\n    \n    return img\n\ndef create_train_dataset(df_labels, data_dir, use_mask=False, target_size=IMG_SIZE):\n    \"\"\"\n    Create numpy arrays for training images and labels.\n    \"\"\"\n    images = []\n    labels = []\n    valid_indices = []\n    \n    for idx, row in df_labels.iterrows():\n        img_path = os.path.join(data_dir, row['sample_index'])\n        img = load_and_preprocess_image(img_path, target_size, use_mask=use_mask)\n        \n        if img is not None:\n            images.append(img)\n            labels.append(row['label_encoded'])\n            valid_indices.append(idx)\n    \n    X = np.array(images)\n    y = np.array(labels)\n    \n    print(f\"Loaded {len(X)} training images (use_mask={use_mask})\")\n    print(f\"Shape: X={X.shape}, y={y.shape}\")\n    \n    return X, y, valid_indices\n\ndef create_test_dataset(test_dir, use_mask=False, target_size=IMG_SIZE):\n    \"\"\"\n    Create numpy arrays for test images.\n    Test folder contains both img_xxxx.png and mask_xxxx.png files.\n    \"\"\"\n    # Get list of test images using the helper function\n    test_files = get_image_files(test_dir)\n    print(f\"Found {len(test_files)} test images\")\n    \n    images = []\n    valid_files = []\n    \n    for filename in test_files:\n        img_path = os.path.join(test_dir, filename)\n        img = load_and_preprocess_image(img_path, target_size, use_mask=use_mask)\n        if img is not None:\n            images.append(img)\n            valid_files.append(filename)\n    \n    X = np.array(images)\n    print(f\"Loaded {len(X)} test images (use_mask={use_mask})\")\n    \n    return X, valid_files",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Model Architecture",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "def build_classification_model(input_shape=(*IMG_SIZE, 3), num_classes=NUM_CLASSES, model_name=\"efficientnet\"):\n    \"\"\"\n    Build a classification model using transfer learning.\n    \"\"\"\n    if model_name == \"resnet50\":\n        base_model = ResNet50(weights='imagenet', include_top=False, input_shape=input_shape)\n    else:\n        base_model = EfficientNetB0(weights='imagenet', include_top=False, input_shape=input_shape)\n    \n    # Freeze base model\n    base_model.trainable = False\n    \n    model = models.Sequential([\n        base_model,\n        layers.GlobalAveragePooling2D(),\n        layers.BatchNormalization(),\n        layers.Dropout(0.3),\n        layers.Dense(256, activation='relu'),\n        layers.BatchNormalization(),\n        layers.Dropout(0.3),\n        layers.Dense(num_classes, activation='softmax')\n    ])\n    \n    model.compile(\n        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),\n        loss='sparse_categorical_crossentropy',\n        metrics=['accuracy']\n    )\n    \n    return model\n\ndef get_callbacks(model_name=\"model\"):\n    \"\"\"Get callbacks for training.\"\"\"\n    return [\n        callbacks.EarlyStopping(\n            monitor='val_loss',\n            patience=5,\n            restore_best_weights=True\n        ),\n        callbacks.ReduceLROnPlateau(\n            monitor='val_loss',\n            factor=0.5,\n            patience=3,\n            min_lr=1e-6\n        )\n    ]",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Training Functions",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "def train_model(X_train, y_train, X_val, y_val, use_mask=False, epochs=EPOCHS, batch_size=BATCH_SIZE):\n    \"\"\"\n    Train a model on the given data.\n    \"\"\"\n    model_name = \"with_mask\" if use_mask else \"no_mask\"\n    print(f\"\\n{'='*50}\")\n    print(f\"Training model: {model_name}\")\n    print(f\"{'='*50}\")\n    \n    model = build_classification_model()\n    model.summary()\n    \n    # Data augmentation\n    datagen = ImageDataGenerator(\n        rotation_range=20,\n        width_shift_range=0.1,\n        height_shift_range=0.1,\n        horizontal_flip=True,\n        vertical_flip=True,\n        zoom_range=0.1\n    )\n    \n    # Train\n    history = model.fit(\n        datagen.flow(X_train, y_train, batch_size=batch_size),\n        validation_data=(X_val, y_val),\n        epochs=epochs,\n        callbacks=get_callbacks(model_name),\n        verbose=1\n    )\n    \n    return model, history\n\ndef plot_training_history(history, title=\"Training History\"):\n    \"\"\"Plot training and validation metrics.\"\"\"\n    fig, axes = plt.subplots(1, 2, figsize=(14, 4))\n    \n    # Accuracy\n    axes[0].plot(history.history['accuracy'], label='Train')\n    axes[0].plot(history.history['val_accuracy'], label='Val')\n    axes[0].set_title(f'{title} - Accuracy')\n    axes[0].set_xlabel('Epoch')\n    axes[0].set_ylabel('Accuracy')\n    axes[0].legend()\n    axes[0].grid(True)\n    \n    # Loss\n    axes[1].plot(history.history['loss'], label='Train')\n    axes[1].plot(history.history['val_loss'], label='Val')\n    axes[1].set_title(f'{title} - Loss')\n    axes[1].set_xlabel('Epoch')\n    axes[1].set_ylabel('Loss')\n    axes[1].legend()\n    axes[1].grid(True)\n    \n    plt.tight_layout()\n    plt.show()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Evaluation Functions",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "def evaluate_on_test(model, X_test, test_files, label_encoder=None, pipeline_name=\"\"):\n    \"\"\"\n    Evaluate model on test data and generate predictions.\n    \"\"\"\n    print(f\"\\nEvaluating on test set ({pipeline_name})...\")\n    print(f\"Test set size: {len(X_test)} images\")\n    \n    # Predict\n    predictions = model.predict(X_test, verbose=1)\n    predicted_classes = np.argmax(predictions, axis=1)\n    \n    # Create results dataframe\n    results = pd.DataFrame({\n        'sample_index': test_files,\n        'predicted_class': predicted_classes,\n        'predicted_label': label_encoder.inverse_transform(predicted_classes) if label_encoder else predicted_classes,\n        'confidence': np.max(predictions, axis=1)\n    })\n    \n    # Add probabilities for each class\n    if label_encoder:\n        for i, class_name in enumerate(label_encoder.classes_):\n            results[f'prob_{class_name}'] = predictions[:, i]\n    \n    return results\n\ndef compare_predictions(results_with_mask, results_no_mask):\n    \"\"\"Compare predictions from both pipelines.\"\"\"\n    merged = results_with_mask.merge(\n        results_no_mask, \n        on='sample_index', \n        suffixes=('_mask', '_nomask')\n    )\n    \n    agreement = (merged['predicted_label_mask'] == merged['predicted_label_nomask']).mean()\n    print(f\"\\nPrediction agreement between pipelines: {agreement:.2%}\")\n    \n    disagreements = merged[merged['predicted_label_mask'] != merged['predicted_label_nomask']]\n    print(f\"Number of disagreements: {len(disagreements)}\")\n    \n    if len(disagreements) > 0:\n        print(\"\\nSample disagreements:\")\n        print(disagreements[['sample_index', 'predicted_label_mask', 'predicted_label_nomask', \n                            'confidence_mask', 'confidence_nomask']].head(10))\n    \n    return merged, agreement",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# ========================================\n# PIPELINE 1: Training AND Testing WITH Masks\n# ========================================\n\nThis pipeline uses the segmentation masks for BOTH training AND testing:\n- Training: Uses train images + train masks\n- Testing: Uses test images + test masks (from /kaggle/working/an2dl2526c2/test_data)\n\nThe mask is applied during preprocessing to highlight the region of interest (lesion area).",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Load TRAINING data WITH masks\nprint(\"=\"*60)\nprint(\"PIPELINE 1: WITH MASKS\")\nprint(\"=\"*60)\nprint(\"\\nLoading training data with masks...\")\nX_mask, y_mask, valid_idx_mask = create_train_dataset(df_labels, TRAIN_DATA_DIR, use_mask=True)\n\n# Split into train and validation\nX_train_mask, X_val_mask, y_train_mask, y_val_mask = train_test_split(\n    X_mask, y_mask, test_size=0.2, random_state=42, stratify=y_mask\n)\n\nprint(f\"\\nTrain set: {len(X_train_mask)} samples\")\nprint(f\"Val set: {len(X_val_mask)} samples\")\n\n# Show sample training images WITH masks applied\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_train_mask):\n        ax.imshow(X_train_mask[i])\n        ax.set_title(f\"Class: {CLASS_NAMES[y_train_mask[i]]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TRAINING Images WITH Mask Applied\", fontsize=14)\nplt.tight_layout()\nplt.show()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "code",
+      "source": "# Train model WITH masks\nmodel_with_mask, history_with_mask = train_model(\n    X_train_mask, y_train_mask,\n    X_val_mask, y_val_mask,\n    use_mask=True,\n    epochs=EPOCHS\n)\n\n# Plot training history\nplot_training_history(history_with_mask, title=\"Pipeline 1: WITH Masks\")\n\n# Evaluate on validation set\nval_loss, val_acc = model_with_mask.evaluate(X_val_mask, y_val_mask, verbose=0)\nprint(f\"\\nValidation Accuracy (WITH mask): {val_acc:.4f}\")",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "code",
+      "source": "# Load TEST data WITH masks\nprint(\"\\nLoading test data WITH masks...\")\nX_test_mask, test_files_mask = create_test_dataset(TEST_DATA_DIR, use_mask=True)\n\n# Show sample test images WITH masks applied\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_test_mask):\n        ax.imshow(X_test_mask[i])\n        ax.set_title(f\"Test: {test_files_mask[i][:12]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TEST Images WITH Mask Applied\", fontsize=14)\nplt.tight_layout()\nplt.show()\n\n# Evaluate on test set WITH masks\nresults_with_mask = evaluate_on_test(\n    model_with_mask, \n    X_test_mask,\n    test_files_mask,\n    label_encoder=label_encoder,\n    pipeline_name=\"WITH masks\"\n)\n\nprint(\"\\nPrediction distribution (WITH mask):\")\nprint(results_with_mask['predicted_label'].value_counts())\nresults_with_mask.head(10)",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# ========================================\n# PIPELINE 2: Training AND Testing WITHOUT Masks\n# ========================================\n\nThis pipeline trains and tests the model on RAW images WITHOUT using segmentation masks:\n- Training: Uses train images only (no masks)\n- Testing: Uses test images only (no masks)\n\nThe model learns to classify based on the entire image.",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Load TRAINING data WITHOUT masks\nprint(\"=\"*60)\nprint(\"PIPELINE 2: WITHOUT MASKS\")\nprint(\"=\"*60)\nprint(\"\\nLoading training data without masks...\")\nX_nomask, y_nomask, valid_idx_nomask = create_train_dataset(df_labels, TRAIN_DATA_DIR, use_mask=False)\n\n# Split into train and validation\nX_train_nomask, X_val_nomask, y_train_nomask, y_val_nomask = train_test_split(\n    X_nomask, y_nomask, test_size=0.2, random_state=42, stratify=y_nomask\n)\n\nprint(f\"\\nTrain set: {len(X_train_nomask)} samples\")\nprint(f\"Val set: {len(X_val_nomask)} samples\")\n\n# Show sample training images WITHOUT masks\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_train_nomask):\n        ax.imshow(X_train_nomask[i])\n        ax.set_title(f\"Class: {CLASS_NAMES[y_train_nomask[i]]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TRAINING Images WITHOUT Mask\", fontsize=14)\nplt.tight_layout()\nplt.show()",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "code",
+      "source": "# Train model WITHOUT masks\nmodel_no_mask, history_no_mask = train_model(\n    X_train_nomask, y_train_nomask,\n    X_val_nomask, y_val_nomask,\n    use_mask=False,\n    epochs=EPOCHS\n)\n\n# Plot training history\nplot_training_history(history_no_mask, title=\"Pipeline 2: WITHOUT Masks\")\n\n# Evaluate on validation set\nval_loss, val_acc = model_no_mask.evaluate(X_val_nomask, y_val_nomask, verbose=0)\nprint(f\"\\nValidation Accuracy (NO mask): {val_acc:.4f}\")",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "code",
+      "source": "# Load TEST data WITHOUT masks\nprint(\"\\nLoading test data WITHOUT masks...\")\nX_test_nomask, test_files_nomask = create_test_dataset(TEST_DATA_DIR, use_mask=False)\n\n# Show sample test images WITHOUT masks\nfig, axes = plt.subplots(2, 4, figsize=(16, 8))\nfor i, ax in enumerate(axes.flat):\n    if i < len(X_test_nomask):\n        ax.imshow(X_test_nomask[i])\n        ax.set_title(f\"Test: {test_files_nomask[i][:12]}\")\n        ax.axis('off')\nplt.suptitle(\"Sample TEST Images WITHOUT Mask\", fontsize=14)\nplt.tight_layout()\nplt.show()\n\n# Evaluate on test set WITHOUT masks\nresults_no_mask = evaluate_on_test(\n    model_no_mask, \n    X_test_nomask,\n    test_files_nomask,\n    label_encoder=label_encoder,\n    pipeline_name=\"WITHOUT masks\"\n)\n\nprint(\"\\nPrediction distribution (NO mask):\")\nprint(results_no_mask['predicted_label'].value_counts())\nresults_no_mask.head(10)",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# ========================================\n# Pipeline Comparison\n# ========================================\n\nCompare the results from both pipelines to see how masks affect predictions.",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Compare predictions from both pipelines\nmerged_results, agreement = compare_predictions(results_with_mask, results_no_mask)\n\n# Visualization of prediction distribution\nfig, axes = plt.subplots(1, 2, figsize=(14, 5))\n\n# With mask\nresults_with_mask['predicted_label'].value_counts().plot(kind='bar', ax=axes[0], color='steelblue')\naxes[0].set_title('Predictions: WITH Mask (Pipeline 1)')\naxes[0].set_xlabel('Class')\naxes[0].set_ylabel('Count')\naxes[0].tick_params(axis='x', rotation=45)\n\n# Without mask\nresults_no_mask['predicted_label'].value_counts().plot(kind='bar', ax=axes[1], color='darkorange')\naxes[1].set_title('Predictions: WITHOUT Mask (Pipeline 2)')\naxes[1].set_xlabel('Class')\naxes[1].set_ylabel('Count')\naxes[1].tick_params(axis='x', rotation=45)\n\nplt.tight_layout()\nplt.show()\n\nprint(\"\\n\" + \"=\"*60)\nprint(\"SUMMARY\")\nprint(\"=\"*60)\nprint(f\"Pipeline 1 (WITH masks) - Train with mask, Test with mask\")\nprint(f\"Pipeline 2 (NO masks) - Train without mask, Test without mask\")\nprint(f\"\\nPrediction agreement between pipelines: {agreement:.2%}\")",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    },
+    {
+      "cell_type": "markdown",
+      "source": "# Save Results",
+      "metadata": {}
+    },
+    {
+      "cell_type": "code",
+      "source": "# Save predictions to CSV files\nresults_with_mask[['sample_index', 'predicted_label']].to_csv('predictions_with_mask.csv', index=False)\nresults_no_mask[['sample_index', 'predicted_label']].to_csv('predictions_no_mask.csv', index=False)\n\n# Save full comparison\nmerged_results.to_csv('pipeline_comparison.csv', index=False)\n\nprint(\"Results saved!\")\nprint(\"- predictions_with_mask.csv\")\nprint(\"- predictions_no_mask.csv\")\nprint(\"- pipeline_comparison.csv\")",
+      "metadata": {
+        "trusted": true
+      },
+      "outputs": [],
+      "execution_count": null
+    }
   ]
 }
